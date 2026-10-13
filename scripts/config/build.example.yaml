@@ -1,0 +1,18 @@
+# Copy to build.yaml. Relative paths are relative to this config directory.
+# Run download to populate missing source paths; supply a pinned NDK version.
+paths:
+  paho_source: "" # download --paho-tag v1.3.16
+  openssl_source: "" # download --openssl-tag openssl-4.0.2
+  ndk: ~/Library/Android/sdk/ndk/version
+
+# Only add fallbacks when automatic discovery fails:
+# Add these entries to the paths mapping above when needed:
+#   java_home: /path/to/jdk          # JAVA_HOME takes precedence
+#   android_sdk: /path/to/sdk       # ~/Library/Android/sdk takes precedence
+#   developer_dir: /path/to/Xcode.app/Contents/Developer
+#   dart_sdk_include: /path/to/dart-sdk/include
+# tools:
+#   flutter: /path/to/flutter/bin/flutter  # used only if absent from PATH
+#   mosquitto: /path/to/mosquitto          # likewise for other tools
+# Dart and Dart headers default to the SDK bundled with the discovered Flutter.
+# Explicit CLI options take precedence over both discovery and YAML.

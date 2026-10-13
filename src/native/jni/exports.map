@@ -1,0 +1,4 @@
+{
+  global: JNI_OnLoad; mqtt_get_api;
+  local: *;
+};

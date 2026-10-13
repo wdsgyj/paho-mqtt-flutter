@@ -1,0 +1,101 @@
+diff --git a/src/MQTTAsync.c b/src/MQTTAsync.c
+index d5bf929..1d4d9f9 100644
+--- a/src/MQTTAsync.c
++++ b/src/MQTTAsync.c
+@@ -1737,6 +1737,27 @@ int MQTTAsync_setConnected(MQTTAsync handle, void* context, MQTTAsync_connected*
+ }
+ 
+ 
++int MQTTAsync_setConnectedWithSession(MQTTAsync handle, void* context,
++		MQTTAsync_connectedWithSession* connected)
++{
++	int rc = MQTTASYNC_SUCCESS;
++	MQTTAsyncs* m = handle;
++
++	FUNC_ENTRY;
++	MQTTAsync_lock_mutex(mqttasync_mutex);
++	if (m == NULL || m->c->connect_state != NOT_IN_PROGRESS)
++		rc = MQTTASYNC_FAILURE;
++	else
++	{
++		m->connectedWithSession_context = context;
++		m->connectedWithSession = connected;
++	}
++	MQTTAsync_unlock_mutex(mqttasync_mutex);
++	FUNC_EXIT_RC(rc);
++	return rc;
++}
++
++
+ int MQTTAsync_setUpdateConnectOptions(MQTTAsync handle, void* context, MQTTAsync_updateConnectOptions* updateOptions)
+ {
+ 	int rc = MQTTASYNC_SUCCESS;
+diff --git a/src/MQTTAsync.h b/src/MQTTAsync.h
+index e3bf876..3c44701 100644
+--- a/src/MQTTAsync.h
++++ b/src/MQTTAsync.h
+@@ -434,6 +434,18 @@ typedef void MQTTAsync_connectionLost(void* context, char* cause);
+  */
+ typedef void MQTTAsync_connected(void* context, char* cause);
+ 
++/** Local additive extension: every successful CONNACK, including automatic
++ * reconnect, reports the session present flag returned by the server (0 or 1).
++ * Runs after the operation onSuccess and the original connected callback.
++ * Registration is independent of MQTTAsync_setConnected(). Neither create nor
++ * destroy may be called from this callback. No notification is made on failure.
++ * @param context The context passed to MQTTAsync_setConnectedWithSession().
++ * @param cause The same diagnostic string passed to MQTTAsync_connected().
++ * @param sessionPresent The current CONNACK session present flag, never unknown.
++ */
++#define MQTTASYNC_HAS_CONNECTED_WITH_SESSION 1
++typedef void MQTTAsync_connectedWithSession(void* context, char* cause, int sessionPresent);
++
+ /**
+  * This is a callback function, which will be called when the client
+  * library receives a disconnect packet from the server. This applies to MQTT V5 and above only.
+@@ -893,6 +905,14 @@ LIBMQTT_API int MQTTAsync_setDeliveryCompleteCallback(MQTTAsync handle, void* co
+  */
+ LIBMQTT_API int MQTTAsync_setConnected(MQTTAsync handle, void* context, MQTTAsync_connected* co);
+ 
++/** Register the extended connection-success callback. NULL removes it.
++ * The original connected callback and its context remain unchanged.
++ * @return MQTTASYNC_SUCCESS, or MQTTASYNC_FAILURE for an invalid handle or while
++ * a connection operation is in progress. Register before connecting.
++ */
++LIBMQTT_API int MQTTAsync_setConnectedWithSession(MQTTAsync handle, void* context,
++		MQTTAsync_connectedWithSession* co);
++
+ 
+ /**
+  * Reconnects a client with the previously used connect options.  Connect
+diff --git a/src/MQTTAsyncUtils.c b/src/MQTTAsyncUtils.c
+index 2754179..1af9831 100644
+--- a/src/MQTTAsyncUtils.c
++++ b/src/MQTTAsyncUtils.c
+@@ -2197,6 +2197,11 @@ thread_return_type WINAPI MQTTAsync_receiveThread(void* n)
+ 							Log(TRACE_MIN, -1, "Calling connected for client %s", m->c->clientID);
+ 							(*(m->connected))(m->connected_context, reason);
+ 						}
++						if (m->connectedWithSession)
++						{
++							char* reason = (onSuccess) ? "connect onSuccess called" : "automatic reconnect";
++							(*(m->connectedWithSession))(m->connectedWithSession_context, reason, sessionPresent);
++						}
+ 						if (m->c->MQTTVersion >= MQTTVERSION_5)
+ 						{
+ 							if (MQTTProperties_hasProperty(&connack->properties, MQTTPROPERTY_CODE_RECEIVE_MAXIMUM))
+diff --git a/src/MQTTAsyncUtils.h b/src/MQTTAsyncUtils.h
+index 3debd1a..57a9b6e 100644
+--- a/src/MQTTAsyncUtils.h
++++ b/src/MQTTAsyncUtils.h
+@@ -146,6 +146,10 @@ typedef struct MQTTAsync_struct
+ 	MQTTProperties* connectProps;
+ 	MQTTProperties* willProps;
+ 
++	/* Local additive extension; keep existing private field offsets unchanged. */
++	MQTTAsync_connectedWithSession* connectedWithSession;
++	void* connectedWithSession_context;
++
+ } MQTTAsyncs;
+ 
+ typedef struct

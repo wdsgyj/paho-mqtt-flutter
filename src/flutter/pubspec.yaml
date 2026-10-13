@@ -1,0 +1,25 @@
+name: paho_mqtt_ffi
+description: Direct C function-table bindings for the Paho MQTT mobile SDK.
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: '>=3.19.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  ffi: ^2.1.0
+dev_dependencies:
+  integration_test:
+    sdk: flutter
+  flutter_test:
+    sdk: flutter
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: org.paho.mqtt.ffi
+        pluginClass: PahoMqttFfiPlugin
+      ios:
+        pluginClass: PahoMqttFfiPlugin
+

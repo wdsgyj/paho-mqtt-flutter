@@ -1,0 +1,13 @@
+static const mqtt_api_v2 api2 = {2,
+                                 sizeof(mqtt_api_v2),
+                                 1,
+                                 &api,
+                                 create2,
+                                 publish2,
+                                 subscribe2,
+                                 unsubscribe2,
+                                 disconnect_normal,
+                                 disconnect_will,
+                                 disconnect_unspecified,
+                                 disconnect_implementation,
+                                 event_details};

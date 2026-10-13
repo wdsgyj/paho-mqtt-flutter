@@ -1,0 +1,259 @@
+--- a/src/MQTTAsyncUtils.h
++++ b/src/MQTTAsyncUtils.h
+@@ -87,9 +87,18 @@
+ 	} details;
+ } MQTTAsync_command;
+ 
++#ifdef MQTT_SDK_DIAGNOSTICS
++#include "mqtt_diagnostics.h"
++#endif
++
+ typedef struct MQTTAsync_struct
+ {
+ 	char* serverURI;
++#ifdef MQTT_SDK_DIAGNOSTICS
++	mqtt_error sdk_error;
++	int sdk_connect_pending;
++#endif
++
+ 	int unixsock;
+ 	int ssl;
+ 	int websocket;
+--- a/src/MQTTAsyncUtils.c
++++ b/src/MQTTAsyncUtils.c
+@@ -1373,6 +1373,12 @@
+ 			else
+ 				command->command.details.conn.MQTTVersion = command->client->c->MQTTVersion;
+ 
++#ifdef MQTT_SDK_DIAGNOSTICS
++			memset(&command->client->sdk_error, 0, sizeof(mqtt_error));
++			command->client->sdk_connect_pending = 1;
++			mqtt_diag_enter(&command->client->sdk_error);
++			mqtt_diag_stage(MQTT_STAGE_TCP);
++#endif
+ 			Log(TRACE_PROTOCOL, -1, "Connecting to serverURI %s with MQTT version %d", serverURI, command->command.details.conn.MQTTVersion);
+ #if defined(OPENSSL)
+ #if defined(__GNUC__) && defined(__linux__)
+@@ -1392,6 +1398,11 @@
+ #endif
+ #endif
+ 
++#ifdef MQTT_SDK_DIAGNOSTICS
++			if (command->client->c->connect_state == WAIT_FOR_CONNACK)
++				command->client->sdk_error.stage = MQTT_STAGE_CONNACK;
++			mqtt_diag_leave();
++#endif
+ 			if (command->client->c->connect_state == NOT_IN_PROGRESS)
+ 				rc = SOCKET_ERROR;
+ 
+@@ -1576,6 +1587,14 @@
+ 		if (command->command.type == CONNECT)
+ 		{
+ 			MQTTAsync_disconnectOptions opts = MQTTAsync_disconnectOptions_initializer;
++#ifdef MQTT_SDK_DIAGNOSTICS
++			if (command->client->sdk_connect_pending) {
++				command->client->sdk_connect_pending = 0;
++				mqtt_sdk_connect_failed(command->client->clContext, rc, "Connection setup failed",
++					&command->client->sdk_error, command->client->automaticReconnect);
++			}
++#endif
++
+ 			MQTTAsync_disconnect(command->client, &opts); /* not "internal" because we don't want to call connection lost */
+ 			command->client->shouldBeConnected = 1; /* as above call is not "internal" we need to reset this */
+ 		}
+@@ -1623,6 +1642,11 @@
+ 			if (command->command.type == CONNECT)
+ 			{
+ 				command->client->connect = command->command;
++#ifdef MQTT_SDK_DIAGNOSTICS
++				/* The original request context has completed; retries must not reuse it. */
++				command->client->connect.onFailure = NULL;
++				command->client->connect.onSuccess = NULL;
++#endif
+ 				MQTTAsync_startConnectRetry(command->client);
+ 			}
+ 			MQTTAsync_freeCommand(command);  /* free up the command if necessary */
+@@ -1684,6 +1708,14 @@
+ 
+ 	if (!more_to_try)
+ 	{
++#ifdef MQTT_SDK_DIAGNOSTICS
++		if (m->sdk_connect_pending) {
++			m->sdk_connect_pending = 0;
++			if (rc > 0) m->sdk_error.stage = MQTT_STAGE_CONNACK;
++			mqtt_sdk_connect_failed(m->clContext, rc, message, &m->sdk_error,
++				m->automaticReconnect && m->shouldBeConnected);
++		}
++#endif
+ 		MQTTAsync_closeSession(m->c, MQTTREASONCODE_SUCCESS, NULL);
+ 		if (m->connect.onFailure)
+ 		{
+@@ -1754,6 +1786,12 @@
+ 		/* check connect timeout */
+ 		if (m->c->connect_state != NOT_IN_PROGRESS && MQTTTime_elapsed(m->connect.start_time) > (ELAPSED_TIME_TYPE)(m->connectTimeout * 1000))
+ 		{
++#ifdef MQTT_SDK_DIAGNOSTICS
++			m->sdk_error.reason = MQTT_REASON_TIMEOUT;
++			if (!m->sdk_error.category) m->sdk_error.category =
++				m->sdk_error.stage == MQTT_STAGE_TLS_HANDSHAKE ? MQTT_ERR_TLS : MQTT_ERR_NETWORK;
++			snprintf(m->sdk_error.message, sizeof(m->sdk_error.message), "Connection attempt timed out");
++#endif
+ 			nextOrClose(m, MQTTASYNC_FAILURE, "TCP connect timeout");
+ 			continue;
+ 		}
+@@ -2015,6 +2053,10 @@
+ 		if ((rc = connack->rc) == MQTTASYNC_SUCCESS)
+ 		{
+ 			m->retrying = 0;
++#ifdef MQTT_SDK_DIAGNOSTICS
++			m->sdk_connect_pending = 0;
++#endif
++
+ 			m->c->connected = 1;
+ 			m->c->good = 1;
+ 			m->c->connect_state = NOT_IN_PROGRESS;
+@@ -2856,6 +2898,9 @@
+ 
+ 	FUNC_ENTRY;
+ 
++#ifdef MQTT_SDK_DIAGNOSTICS
++	mqtt_diag_enter(&m->sdk_error);
++#endif
+ 	/* This was reported in #1007, but I've not been able to reproduce it.  It feels like this is
+ 	 * covering up the issue, if it exists.  If the error message is ever seen, please consider
+ 	 * reporting the circumstances so that more debugging can occur.  Thanks - IGC.
+@@ -2915,6 +2960,9 @@
+ 		if ((rc = getsockopt(m->c->net.socket, SOL_SOCKET, SO_ERROR, (char*)&error, &len)) == 0)
+ 			rc = error;
+ 
++#ifdef MQTT_SDK_DIAGNOSTICS
++		if (rc != 0) mqtt_diag_system(rc == -1 ? errno : rc);
++#endif
+ 		if (rc != 0)
+ 			goto exit;
+ 
+@@ -3054,6 +3102,10 @@
+ 	}
+ 
+ exit:
++#ifdef MQTT_SDK_DIAGNOSTICS
++	if (m->c->connect_state == WAIT_FOR_CONNACK) m->sdk_error.stage = MQTT_STAGE_CONNACK;
++	mqtt_diag_leave();
++#endif
+ 	if ((rc != 0 && rc != TCPSOCKET_INTERRUPTED && (m->c->connect_state != SSL_IN_PROGRESS && m->c->connect_state != WEBSOCKET_IN_PROGRESS)) || (rc == SSL_FATAL))
+ 		nextOrClose(m, MQTTASYNC_FAILURE, "TCP/TLS connect failure");
+ 
+--- a/src/Socket.c
++++ b/src/Socket.c
+@@ -33,6 +33,10 @@
+ 
+ 
+ #include "Socket.h"
++#ifdef MQTT_SDK_DIAGNOSTICS
++#include "mqtt_diagnostics.h"
++#endif
++
+ #include "Log.h"
+ #include "SocketBuffer.h"
+ #include "Messages.h"
+@@ -124,6 +128,9 @@
+ 	err = WSAGetLastError();
+ #else
+ 	err = errno;
++#endif
++#ifdef MQTT_SDK_DIAGNOSTICS
++	mqtt_diag_system(err);
+ #endif
+ 	if (err != EINTR && err != EAGAIN && err != EINPROGRESS && err != EWOULDBLOCK)
+ 	{
+@@ -1401,6 +1408,10 @@
+ 	}
+ #else
+ 	rc = getaddrinfo(addr_mem, NULL, &hints, &result);
++#ifdef MQTT_SDK_DIAGNOSTICS
++	if (rc) mqtt_diag_dns(rc, errno);
++#endif
++
+ #endif
+ 
+ 	if (rc == 0)
+--- a/src/SSLSocket.c
++++ b/src/SSLSocket.c
+@@ -33,6 +33,10 @@
+ #include "MQTTClient.h"
+ #include "MQTTProtocolOut.h"
+ #include "SSLSocket.h"
++#ifdef MQTT_SDK_DIAGNOSTICS
++#include "mqtt_diagnostics.h"
++#endif
++
+ #include "Log.h"
+ #include "StackTrace.h"
+ #include "Socket.h"
+@@ -102,12 +106,19 @@
+ static int SSLSocket_error(char* aString, SSL* ssl, SOCKET sock, int rc, int (*cb)(const char *str, size_t len, void *u), void* u)
+ {
+     int error;
++#ifdef MQTT_SDK_DIAGNOSTICS
++    int saved_errno = errno;
++#endif
+ 
+     FUNC_ENTRY;
+     if (ssl)
+         error = SSL_get_error(ssl, rc);
+     else
++#ifdef MQTT_SDK_DIAGNOSTICS
++        error = (int)ERR_peek_error();
++#else
+         error = ERR_get_error();
++#endif
+     if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE)
+     {
+ 		Log(TRACE_MIN, -1, "SSLSocket error WANT_READ/WANT_WRITE");
+@@ -115,6 +126,11 @@
+     else
+     {
+         static char buf[120];
++#ifdef MQTT_SDK_DIAGNOSTICS
++        mqtt_diag_tls(ssl ? error : -1, ssl ? SSL_get_verify_result(ssl) : -1,
++            ssl && error == SSL_ERROR_SYSCALL ? saved_errno : 0, aString);
++#endif
++
+ 
+         if (strcmp(aString, "shutdown") != 0)
+         	Log(TRACE_MIN, -1, "SSLSocket error %s(%d) in %s for socket %d rc %d errno %d %s\n", buf, error, aString, sock, rc, errno, strerror(errno));
+@@ -730,6 +746,9 @@
+ 
+ 	FUNC_ENTRY;
+ 
++#ifdef MQTT_SDK_DIAGNOSTICS
++	mqtt_diag_stage(MQTT_STAGE_TLS_CONFIG);
++#endif
+ 	if (net->ctx != NULL || (rc = SSLSocket_createContext(net, opts)) == 1)
+ 	{
+ 		char *hostname_plus_null;
+@@ -794,6 +813,10 @@
+ 	FUNC_ENTRY;
+ 
+ 	ERR_clear_error();
++#ifdef MQTT_SDK_DIAGNOSTICS
++	mqtt_diag_stage(MQTT_STAGE_TLS_HANDSHAKE);
++	errno = 0;
++#endif
+ 	rc = SSL_connect(ssl);
+ 	if (rc != 1)
+ 	{
+@@ -858,8 +881,12 @@
+ 					free(ip_addr);
+ 				}
+ 
+-				if (rc == 0 || rc == -1 || rc == -2)
++				if (rc == 0 || rc == -1 || rc == -2) {
++#ifdef MQTT_SDK_DIAGNOSTICS
++					mqtt_diag_tls(-1, X509_V_ERR_HOSTNAME_MISMATCH, 0, "TLS hostname verification failed");
++#endif
+ 					rc = SSL_FATAL;
++				}
+ 			}
+ 
+ 			if (cert)

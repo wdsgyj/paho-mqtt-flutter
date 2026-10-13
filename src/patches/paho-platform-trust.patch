@@ -1,0 +1,40 @@
+diff --git a/src/SSLSocket.c b/src/SSLSocket.c
+index 7a9827a..8126d00 100644
+--- a/src/SSLSocket.c
++++ b/src/SSLSocket.c
+@@ -45,6 +45,10 @@
+ #include <openssl/crypto.h>
+ #include <openssl/x509v3.h>
+ 
++#if defined(MQTT_SDK_PLATFORM_TRUST)
++#include "mqtt_tls.h"
++#endif
++
+ extern Sockets mod_s;
+ 
+ static int SSLSocket_error(char* aString, SSL* ssl, SOCKET sock, int rc, int (*cb)(const char *str, size_t len, void *u), void* u);
+@@ -634,6 +638,16 @@ int SSLSocket_createContext(networkHandles* net, MQTTClient_SSLOptions* opts)
+ 		}
+ 	}
+ 
++#if defined(MQTT_SDK_PLATFORM_TRUST)
++	if ((rc = mqtt_tls_configure_trust(net->ctx, opts->trustStore, opts->CApath,
++		!opts->enableServerCertAuth && opts->struct_version >= 2 && !opts->verify)) != 1)
++	{
++		SSLSocket_error("mqtt_tls_configure_trust", NULL, net->socket, rc,
++			opts->struct_version >= 3 ? opts->ssl_error_cb : NULL,
++			opts->struct_version >= 3 ? opts->ssl_error_context : NULL);
++		goto free_ctx;
++	}
++#else
+ 	if (opts->trustStore || opts->CApath)
+ 	{
+ 		if ((rc = SSL_CTX_load_verify_locations(net->ctx, opts->trustStore, opts->CApath)) != 1)
+@@ -656,6 +670,7 @@ int SSLSocket_createContext(networkHandles* net, MQTTClient_SSLOptions* opts)
+ 			goto free_ctx;
+ 		}
+ 	}
++#endif
+ 
+ 	if (opts->enabledCipherSuites)
+ 	{

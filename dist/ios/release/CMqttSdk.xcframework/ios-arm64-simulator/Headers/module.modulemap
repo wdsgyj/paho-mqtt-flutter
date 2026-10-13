@@ -1,0 +1,4 @@
+module CMqttSdk {
+  header "mqtt_api_v2.h"
+  export *
+}

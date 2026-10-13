@@ -1,0 +1,1 @@
+-keep class org.paho.mqtt.ffi.PahoMqttFfiPlugin { native <methods>; }

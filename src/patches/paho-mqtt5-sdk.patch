@@ -1,0 +1,279 @@
+--- a/src/MQTTAsyncUtils.c
++++ b/src/MQTTAsyncUtils.c
+@@ -56,6 +56,16 @@
+ static void MQTTAsync_freeCommand(MQTTAsync_queuedCommand *command);
+ static int MQTTAsync_processCommand(void);
+ static void MQTTAsync_checkTimeouts(void);
++#include "mqtt_v5_hooks.h"
++int mqtt_sdk_socket_allowed(int socket, size_t size) {
++    extern List *MQTTAsync_handles;
++    ListElement *elem=NULL;
++    while (ListNextElement(MQTTAsync_handles,&elem)) {
++        MQTTAsyncs *m=elem->content;
++        if(m->c->net.socket==socket) return mqtt_sdk_outgoing_allowed(m->clContext,size);
++    }
++    return 1;
++}
+ static int MQTTAsync_completeConnection(MQTTAsyncs* m, Connack* connack);
+ static void MQTTAsync_stop(void);
+ static void MQTTAsync_closeOnly(Clients* client, enum MQTTReasonCodes reasonCode, MQTTProperties* props);
+@@ -971,6 +981,8 @@
+ 	if (m->c->outboundMsgs->count == 0 || MQTTTime_elapsed(command->start_time) >= (ELAPSED_TIME_TYPE)command->details.dis.timeout)
+ 	{
+ 		int was_connected = m->c->connected;
++        if (m->c->MQTTVersion == MQTTVERSION_5 && MQTTProperties_hasProperty(&command->properties, MQTTPROPERTY_CODE_SESSION_EXPIRY_INTERVAL))
++            m->c->sessionExpiry = (unsigned int)MQTTProperties_getNumericValue(&command->properties, MQTTPROPERTY_CODE_SESSION_EXPIRY_INTERVAL);
+ 		MQTTAsync_closeSession(m->c, command->details.dis.reasonCode, &command->properties);
+ 		if (command->details.dis.internal)
+ 		{
+@@ -1802,7 +1814,7 @@
+ 		 * In any case, that section was disabled when automatic reconnect was implemented.
+ 		 */
+ 
+-		if (m->automaticReconnect && m->retrying)
++		if (m->automaticReconnect && m->retrying && mqtt_sdk_retry_allowed(m->clContext))
+ 		{
+ 			if (m->reconnectNow || MQTTTime_elapsed(m->lastConnectionFailedTime) > (ELAPSED_TIME_TYPE)(m->currentInterval * 1000))
+ 			{
+@@ -1813,6 +1825,8 @@
+ 				memset(conn, '\0', sizeof(MQTTAsync_queuedCommand));
+ 				conn->client = m;
+ 				conn->command = m->connect;
++                if (m->c->MQTTVersion == MQTTVERSION_5)
++                    m->c->cleanstart = mqtt_sdk_clean_start(m->clContext);
+ 	  			/* make sure that the version attempts are restarted */
+ 				if (m->c->MQTTVersion == MQTTVERSION_DEFAULT)
+ 					conn->command.details.conn.MQTTVersion = 0;
+@@ -2075,7 +2089,8 @@
+ 				while (ListNextElement(m->c->outboundMsgs, &outcurrent))
+ 				{
+ 					Messages* messages = (Messages*)(outcurrent->content);
+-					memset(&messages->lastTouch, '\0', sizeof(messages->lastTouch));
++					messages->sdk_sent_on_connection = 0;
++                    memset(&messages->lastTouch, '\0', sizeof(messages->lastTouch));
+ 				}
+ 				MQTTProtocol_retry(zero, 1, 1);
+ 				if (m->c->connected != 1)
+@@ -2187,7 +2202,13 @@
+ 					Connack* connack = (Connack*)pack;
+ 					int sessionPresent = connack->flags.bits.sessionPresent;
+ 
+-					rc = MQTTAsync_completeConnection(m, connack);
++					mqtt_sdk_connack(m->clContext, connack->rc, &connack->properties);
++                    if (m->c->MQTTVersion == MQTTVERSION_5 && connack->rc == 0) {
++                        unsigned int expiry = mqtt_sdk_session_expiry(m->clContext);
++                        m->c->sessionExpiry = expiry;
++                        m->c->maxInflightMessages = mqtt_sdk_inflight(m->clContext);
++                    }
++                    rc = MQTTAsync_completeConnection(m, connack);
+ 					if (rc == MQTTASYNC_SUCCESS)
+ 					{
+ 						int onSuccess = 0;
+@@ -2723,8 +2744,19 @@
+ 		}
+ 	}
+ 
+-	if (rc == 0) /* if message was not delivered, queue it up */
+-	{
++    if (rc == 0) /* if message was not delivered, queue it up */
++    {
++        if (!mqtt_sdk_queue_allowed(((MQTTAsyncs*)client->context)->clContext,
++                client->messageQueue->count, client->messageQueue->size,
++                mm->payloadlen + mm->properties.length + strlen(publish->topic) + 128)) {
++            MQTTAsync_freeMessage(&mm);
++            free(publish->topic);
++            publish->topic = NULL;
++            ((MQTTAsyncs*)client->context)->automaticReconnect = 0;
++            ((MQTTAsyncs*)client->context)->shouldBeConnected = 0;
++            MQTTAsync_disconnect_internal((MQTTAsync)client->context, 0);
++            goto exit;
++        }
+ 		qEntry* qe = malloc(sizeof(qEntry));
+ 
+ 		if (!qe)
+@@ -2732,7 +2764,7 @@
+ 		qe->msg = mm;
+ 		qe->topicName = publish->topic;
+ 		qe->topicLen = publish->topiclen;
+-		ListAppend(client->messageQueue, qe, sizeof(qe) + sizeof(mm) + mm->payloadlen + strlen(qe->topicName)+1);
++		ListAppend(client->messageQueue, qe, sizeof(*qe) + sizeof(*mm) + mm->payloadlen + mm->properties.length + strlen(qe->topicName)+1);
+ #if !defined(NO_PERSISTENCE)
+ 		if (client->persistence)
+ 			MQTTPersistence_persistQueueEntry(client, (MQTTPersistence_qEntry*)qe);
+@@ -2769,8 +2801,6 @@
+ 		rc = MQTTASYNC_FAILURE;
+ 		goto exit;
+ 	}
+-	if (!internal)
+-		m->shouldBeConnected = 0;
+ 	if (m->c->connected == 0)
+ 	{
+ 		rc = MQTTASYNC_DISCONNECTED;
+@@ -2801,6 +2831,7 @@
+ 	}
+ 	dis->command.type = DISCONNECT;
+ 	dis->command.details.dis.internal = internal;
++    if (!internal) m->shouldBeConnected = 0;
+ 	rc = MQTTAsync_addCommand(dis, sizeof(dis));
+ 
+ exit:
+@@ -3154,7 +3185,11 @@
+ 			if (m->c->connect_state == TCP_IN_PROGRESS || m->c->connect_state == SSL_IN_PROGRESS || m->c->connect_state == WEBSOCKET_IN_PROGRESS)
+ 				*rc = MQTTAsync_connecting(m);
+ 			else
+-				pack = MQTTPacket_Factory(m->c->MQTTVersion, &m->c->net, rc);
++            {
++                mqtt_sdk_read_enter(m->clContext);
++                pack = MQTTPacket_Factory(m->c->MQTTVersion, &m->c->net, rc);
++                mqtt_sdk_read_enter(NULL);
++            }
+ 			if (m->c->connect_state == WAIT_FOR_CONNACK && *rc == SOCKET_ERROR)
+ 			{
+ 				Log(TRACE_MINIMUM, -1, "CONNECT sent but MQTTPacket_Factory has returned SOCKET_ERROR");
+@@ -3193,7 +3228,9 @@
+ 					}
+ 				}
+ 
+-				if (msgtype == PUBCOMP)
++				if (m && mqttversion >= MQTTVERSION_5)
++                    mqtt_sdk_ack(m->clContext, msgid, msgtype, ackrc, &msgprops);
++                if (msgtype == PUBCOMP)
+ 				{
+ 					*rc = MQTTProtocol_handlePubcomps(pack, *sock, &pubToRemove);
+ 					if (sendThread_state != STOPPED)
+@@ -3249,7 +3286,8 @@
+ 								data.alt.pub.message.payloadlen = command->command.details.pub.payloadlen;
+ 								data.alt.pub.message.qos = command->command.details.pub.qos;
+ 								data.alt.pub.message.retained = command->command.details.pub.retained;
+-								data.properties = command->command.properties;
++								data.reasonCode = ackrc;
++                                data.properties = msgprops;
+ 								Log(TRACE_MIN, -1, "Calling publish success for client %s", m->c->clientID);
+ 								(*(command->command.onSuccess5))(command->command.context, &data);
+ 							}
+@@ -3278,9 +3316,9 @@
+ 							break;
+ 						}
+ 					}
+-					if (mqttversion >= MQTTVERSION_5)
+-						MQTTProperties_free(&msgprops);
+-				}
++				}
++                if (mqttversion >= MQTTVERSION_5)
++                    MQTTProperties_free(&msgprops);
+ 				if (pubToRemove != NULL)
+ 					MQTTProtocol_removePublication(pubToRemove);
+ 			}
+--- a/src/MQTTPacket.c
++++ b/src/MQTTPacket.c
+@@ -26,6 +26,7 @@
+  */
+ 
+ #include "MQTTPacket.h"
++#include "mqtt_v5_hooks.h"
+ #include "Log.h"
+ #if !defined(NO_PERSISTENCE)
+ 	#include "MQTTPersistence.h"
+@@ -125,6 +126,10 @@
+ 	if ((*error = MQTTPacket_decode(net, &remaining_length)) != TCPSOCKET_COMPLETE)
+ 		goto exit; /* packet not read, *error indicates whether SOCKET_ERROR occurred */
+ 
++    if (!mqtt_sdk_packet_allowed(remaining_length + 1 + MQTTPacket_VBIlen(remaining_length))) {
++        *error = SOCKET_ERROR;
++        goto exit;
++    }
+ 	/* now read the rest, the variable header and payload */
+ 	data = WebSocket_getdata(net, remaining_length, &actual_len);
+ 	if (remaining_length && data == NULL)
+@@ -202,6 +207,7 @@
+ 
+ 	FUNC_ENTRY;
+ 	buf0len = 1 + MQTTPacket_encode(NULL, buflen);
++    if (header.bits.type != CONNECT && !mqtt_sdk_socket_allowed(net->socket,buf0len+buflen)) goto exit;
+ 	buf = malloc(buf0len);
+ 	if (buf == NULL)
+ 	{
+@@ -262,6 +268,7 @@
+ 	for (i = 0; i < bufs->count; i++)
+ 		total += bufs->buflens[i];
+ 	buf0len = 1 + MQTTPacket_encode(NULL, total);
++    if (header.bits.type != CONNECT && !mqtt_sdk_socket_allowed(net->socket,buf0len+total)) goto exit;
+ 	buf = malloc(buf0len);
+ 	if (buf == NULL)
+ 	{
+--- a/src/MQTTAsync.c
++++ b/src/MQTTAsync.c
+@@ -53,6 +53,7 @@
+ #include "MQTTPersistence.h"
+ #endif
+ #include "MQTTAsync.h"
++#include "mqtt_v5_hooks.h"
+ #include "MQTTAsyncUtils.h"
+ #include "utf-8.h"
+ #include "MQTTProtocol.h"
+@@ -1365,6 +1366,7 @@
+ 	memcpy(pub->command.details.pub.payload, payload, payloadlen);
+ 	pub->command.details.pub.qos = qos;
+ 	pub->command.details.pub.retained = retained;
++	mqtt_sdk_token(m->clContext, response ? response->context : NULL, pub->command.token);
+ 	rc = MQTTAsync_addCommand(pub, sizeof(pub));
+ 
+ exit:
+--- a/src/Clients.h
++++ b/src/Clients.h
+@@ -59,6 +59,7 @@
+ 	int MQTTVersion;
+ 	MQTTProperties properties;
+ 	Publications *publish;
++	int sdk_sent_on_connection;
+ 	START_TIME_TYPE lastTouch;		    /**> used for retry and expiry */
+ 	char nextMessageType;	/**> PUBREC, PUBREL, PUBCOMP */
+ 	int len;				/**> length of the whole structure+data */
+--- a/src/MQTTProtocolClient.c
++++ b/src/MQTTProtocolClient.c
+@@ -238,6 +238,7 @@
+ 		++(((*mm)->publish)->refcount);
+ 		m->publish = (*mm)->publish;
+ 	}
++	m->sdk_sent_on_connection = 1;
+ 	m->msgid = publish->msgId;
+ 	m->qos = qos;
+ 	m->retain = retained;
+@@ -802,11 +803,18 @@
+  */
+ static void MQTTProtocol_retries(START_TIME_TYPE now, Clients* client, int regardless)
+ {
+-	ListElement* outcurrent = NULL;
+-
+-	FUNC_ENTRY;
+-
+-	if (!regardless && client->retryInterval <= 0 && /* 0 or -ive retryInterval turns off retry except on reconnect */
++    ListElement* outcurrent = NULL;
++    int mqtt5 = client->MQTTVersion >= 5;
++    int quota = client->maxInflightMessages;
++    if(mqtt5) {
++        ListElement *e=NULL;
++        while(ListNextElement(client->outboundMsgs,&e))
++            if(((Messages*)e->content)->sdk_sent_on_connection) --quota;
++    }
++
++	FUNC_ENTRY;
++
++	if (!mqtt5 && !regardless && client->retryInterval <= 0 && /* 0 or -ive retryInterval turns off retry except on reconnect */
+ 			client->connect_sent == client->connect_count)
+ 		goto exit;
+ 
+@@ -820,9 +828,10 @@
+ 		   Socket_noPendingWrites(client->net.socket)) /* there aren't any previous packets still stacked up on the socket */
+ 	{
+ 		Messages* m = (Messages*)(outcurrent->content);
+-		if (regardless || MQTTTime_difftime(now, m->lastTouch) > (DIFF_TIME_TYPE)(max(client->retryInterval, 10) * 1000))
+-		{
+-			if (regardless)
++		if (mqtt5 ? (!m->sdk_sent_on_connection && quota > 0) : (regardless || MQTTTime_difftime(now, m->lastTouch) > (DIFF_TIME_TYPE)(max(client->retryInterval, 10) * 1000)))
++		{
++			if(mqtt5) {m->sdk_sent_on_connection=1;--quota;}
++            if (regardless)
+ 				++client->connect_sent;
+ 			if (m->qos == 1 || (m->qos == 2 && m->nextMessageType == PUBREC))
+ 			{
