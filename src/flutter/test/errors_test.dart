@@ -12,7 +12,7 @@ void main() {
   final source = Platform.environment['MQTT_ERROR_FIXTURE'];
   test('structured failures and initial automatic retries', () async {
     final f = Map<String, String>.from(jsonDecode(source!) as Map);
-    mockMqttNativeApi();
+    setUpMqttHostTests();
     Future<void> failure(String uri, Matcher expected,
         {String? ca, bool auto = false}) async {
       final client = await MqttClient.create(MqttOptions(

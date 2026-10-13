@@ -236,12 +236,51 @@ Flutter 单独检查：
 cd src/flutter
 flutter analyze
 dart format --output=none --set-exit-if-changed lib test integration
-MQTT_TEST_LIBRARY="$PWD/../../dist/test/macos-arm64/release/libmqtt_sdk.dylib" \
-  flutter test test/mqtt_v2_test.dart
+flutter test test/mqtt_v2_test.dart
 ```
 
 host 测试统一通过 [native_bootstrap.dart](../src/flutter/test/support/native_bootstrap.dart)
-加载动态库并安装自动清理的 MethodChannel mock；模拟器使用真实插件引导。
+的 `setUpMqttHostTests()` 加载真实动态库并安装自动清理的 MethodChannel mock；
+模拟器使用真实插件引导。例如，在测试文件中：
+
+```dart
+import 'package:flutter_test/flutter_test.dart';
+import 'package:paho_mqtt_ffi/mqtt5.dart';
+import 'support/native_bootstrap.dart';
+
+void main() {
+  setUpAll(() => setUpMqttHostTests());
+
+  test('host client', () async {
+    final client = await MqttClient.create(const MqttOptions(
+      serverUri: 'tcp://127.0.0.1:1883',
+      clientId: 'host-test',
+    ));
+    try {
+      expect(client.pahoVersion, isNotEmpty);
+      // 可在这里使用连接、订阅、发布等 API；联网操作需要可用的 broker。
+    } finally {
+      await client.close();
+    }
+  });
+}
+```
+
+同一个入口支持 `mqtt311.dart` 和 `mqtt5.dart` 的全部客户端 API，MQTT 操作使用真实
+FFI，不是业务行为 mock。动态库路径优先使用 `libraryPath`，其次使用非空的
+`MQTT_TEST_LIBRARY`；两者均未提供时，从当前工作目录向上定位仓库，使用
+`dist/test/macos-arm64/release/libmqtt_sdk.dylib`。默认产物不存在时会提示先构建
+host 库；显式指定的路径无效时直接报错，不回退到默认库。
+库加载或 ABI 2 表获取失败会立即报错；完整 ABI 校验与 FFI 初始化由 SDK 在首次
+`MqttClient.create()` 时完成。调用者无需处理函数表、指针或 MethodChannel。
+可以在 `test`、`setUp` 或 `setUpAll` 中调用，mock 会在相应作用域结束时清理；
+客户端仍需显式 `close()`。SDK 初始化结果按 isolate 缓存，重复调用此辅助函数不会
+切换已初始化的库或重置初始化错误。
+
+兼容性测试使用 `mockMqttBootstrapFailure(MqttBootstrapFault...)` 表达缺失能力或
+版本不兼容的场景，函数表复制、修改和释放统一封装。各故障场景仍放在独立测试
+文件中，以隔离 SDK 初始化缓存。仅自行构造 native 函数表的底层测试需要
+`mockMqttNativeApi(api: ...)`。
 
 ## 正式 App 的崩溃符号
 

@@ -88,7 +88,7 @@ func prepareApp(o appOptions, platform, work string) (string, string) {
 }
 func prepareWire(host string) {
 	s := read(join(src, "flutter/test/mqtt_v2_test.dart"))
-	for _, marker := range []string{"import 'support/native_bootstrap.dart';\n", "  setUpAll(() => mockMqttNativeApi());\n"} {
+	for _, marker := range []string{"import 'support/native_bootstrap.dart';\n", "  setUpAll(() => setUpMqttHostTests());\n"} {
 		if strings.Count(s, marker) != 1 {
 			panic("host bootstrap marker changed")
 		}

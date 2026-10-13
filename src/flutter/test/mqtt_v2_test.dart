@@ -102,7 +102,7 @@ class Broker {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  setUpAll(() => mockMqttNativeApi());
+  setUpAll(() => setUpMqttHostTests());
   test(
       'MQTT5 wire properties, ACK snapshots, subscriptions and server disconnect',
       () async {

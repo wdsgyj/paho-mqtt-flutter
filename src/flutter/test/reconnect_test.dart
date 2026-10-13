@@ -24,7 +24,7 @@ void main() {
   final control = Platform.environment['MQTT_TEST_CONTROL'];
   test('ordered connection transitions, counts, timestamps and recovery',
       () async {
-    mockMqttNativeApi();
+    setUpMqttHostTests();
     Future<void> broker(String command) async {
       final socket = await Socket.connect('127.0.0.1', int.parse(control!));
       try {

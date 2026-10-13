@@ -11,7 +11,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   final uri = Platform.environment['MQTT_TEST_BROKER'];
   setUpAll(() {
-    if (uri != null) mockMqttNativeApi();
+    if (uri != null) setUpMqttHostTests();
   });
   test('MQTT5 real broker session, retained expiry, binary properties and Will',
       () async {

@@ -12,13 +12,11 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   test('concurrent create initializes once and all MQTT operations use FFI',
       () async {
-    final api = loadMqttTestApi();
     final bootstrapEntered = Completer<void>();
     final allowBootstrap = Completer<void>();
-    final bootstrap = mockMqttNativeApi(reply: () async {
+    final bootstrap = setUpMqttHostTests(beforeBootstrap: () async {
       bootstrapEntered.complete();
       await allowBootstrap.future;
-      return mqttTestApiReply(api);
     });
     final creates = List.generate(
         8,

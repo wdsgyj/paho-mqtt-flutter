@@ -66,11 +66,11 @@ func TestWirePreparation(t *testing.T) {
 	saved := src
 	t.Cleanup(func() { src = saved })
 	src = join(t.TempDir(), "src")
-	must(write(join(src, "flutter/test/mqtt_v2_test.dart"), "import 'support/native_bootstrap.dart';\nimport 'package:flutter_test/flutter_test.dart';\nvoid main() {\n  TestWidgetsFlutterBinding.ensureInitialized();\n  setUpAll(() => mockMqttNativeApi());\n  test('x', () async {});\n}\n"))
+	must(write(join(src, "flutter/test/mqtt_v2_test.dart"), "import 'support/native_bootstrap.dart';\nimport 'package:flutter_test/flutter_test.dart';\nvoid main() {\n  TestWidgetsFlutterBinding.ensureInitialized();\n  setUpAll(() => setUpMqttHostTests());\n  test('x', () async {});\n}\n"))
 	host := join(filepath.Dir(src), "host")
 	prepareWire(host)
 	s := read(join(host, "integration_test/mqtt_v2_test.dart"))
-	if strings.Contains(s, "mockMqttNativeApi") || !strings.Contains(s, "IntegrationTestWidgetsFlutterBinding") || !strings.Contains(s, "testWidgets") {
+	if strings.Contains(s, "setUpMqttHostTests") || !strings.Contains(s, "IntegrationTestWidgetsFlutterBinding") || !strings.Contains(s, "testWidgets") {
 		t.Fatal(s)
 	}
 }

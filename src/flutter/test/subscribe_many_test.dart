@@ -9,7 +9,7 @@ import 'support/native_bootstrap.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   test('one packet subscriptions and per-topic SUBACK results', () async {
-    mockMqttNativeApi();
+    setUpMqttHostTests();
     final client = await MqttClient.create(MqttOptions(
         serverUri: Platform.environment['MQTT_TEST_BROKER']!,
         clientId: 'dart-many'));
